@@ -223,12 +223,63 @@
   nav.tabbar button .ic{ width:20px; height:20px; }
   nav.tabbar button .ic svg{ width:100%; height:100%; }
 </style>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyBuolkAu58RhKCvoXapsneNFmnoQS6ElxA",
+    authDomain: "jeevan-app-33283.firebaseapp.com",
+    projectId: "jeevan-app-33283",
+    storageBucket: "jeevan-app-33283.firebasestorage.app",
+    messagingSenderId: "301983560779",
+    appId: "1:301983560779:web:1f6a48c680f958e5c589ce",
+    measurementId: "G-CVTNNQHP08"
+  };
+  firebase.initializeApp(firebaseConfig);
+</script>
+<style>
+  .auth-gate{
+    position: fixed; inset: 0; background: var(--bg); z-index: 999;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .auth-gate.hidden{ display: none; }
+  .auth-card{
+    max-width: 360px; text-align: center;
+  }
+  .auth-card .abrand{ font-family:'Fraunces', serif; font-size: 32px; font-weight: 600; margin-bottom: 10px; }
+  .auth-card p{ color: var(--ink-soft); font-size: 14px; margin-bottom: 22px; }
+  .auth-card button{
+    background: var(--water); color: #fff; border: none; border-radius: 10px;
+    padding: 13px 24px; font-family:'Inter'; font-weight: 600; font-size: 14.5px; cursor: pointer;
+  }
+  .auth-card .astatus{ margin-top: 14px; font-size: 12.5px; color: var(--ink-soft); }
+  .user-bar{
+    display:flex; align-items:center; justify-content:space-between;
+    font-size: 12px; color: var(--ink-soft); margin-top: 4px;
+  }
+  .user-bar button{
+    background:none; border:none; color: var(--water); font-family:'Inter';
+    font-size: 12px; font-weight:600; cursor:pointer; padding:0;
+  }
+</style>
 </head>
 <body>
-<div id="app">
+
+<div class="auth-gate" id="authGate">
+  <div class="auth-card">
+    <div class="abrand">Jeevan</div>
+    <p>Sign in with Google to save your water and urine logs to the cloud, tied to your account.</p>
+    <button id="signInBtn">Continue with Google</button>
+    <div class="astatus" id="authStatus"></div>
+  </div>
+</div>
+
+<div id="app" style="display:none;">
   <header class="top">
     <div class="brand">Jeevan</div>
     <div class="date" id="headerDate"></div>
+    <div class="user-bar"><span id="userEmail"></span><button id="signOutBtn">Sign out</button></div>
   </header>
 
   <!-- HOME -->
@@ -341,6 +392,75 @@
 </div>
 
 <script>
+const auth = firebase.auth();
+const db = firebase.firestore();
+const provider = new firebase.auth.GoogleAuthProvider();
+let currentUser = null;
+
+function kvRef(uid, key){
+  return db.collection('users').doc(uid).collection('kv').doc(key);
+}
+
+const storage = {
+  async get(key){
+    if(!currentUser) return null;
+    try{
+      const doc = await kvRef(currentUser.uid, key).get();
+      if(!doc.exists) return null;
+      return {key, value: doc.data().value};
+    }catch(e){ console.error('storage.get failed', e); return null; }
+  },
+  async set(key, value){
+    if(!currentUser) return null;
+    try{
+      await kvRef(currentUser.uid, key).set({value});
+      return {key, value};
+    }catch(e){ console.error('storage.set failed', e); return null; }
+  },
+  async delete(key){
+    if(!currentUser) return null;
+    try{
+      await kvRef(currentUser.uid, key).delete();
+      return {key, deleted:true};
+    }catch(e){ return null; }
+  },
+  async list(prefix){
+    if(!currentUser) return {keys: []};
+    try{
+      const snap = await db.collection('users').doc(currentUser.uid).collection('kv').get();
+      const keys = [];
+      snap.forEach(d=>{ if(d.id.startsWith(prefix||'')) keys.push(d.id); });
+      return {keys};
+    }catch(e){ return {keys: []}; }
+  }
+};
+
+document.getElementById('signInBtn').onclick = ()=>{
+  document.getElementById('authStatus').textContent = 'Opening Google sign-in…';
+  auth.signInWithRedirect(provider);
+};
+document.getElementById('signOutBtn').onclick = ()=>{
+  auth.signOut();
+};
+
+auth.onAuthStateChanged(user=>{
+  if(user){
+    currentUser = user;
+    document.getElementById('authGate').classList.add('hidden');
+    document.getElementById('app').style.display = '';
+    document.getElementById('userEmail').textContent = user.email;
+    renderHome();
+  } else {
+    currentUser = null;
+    document.getElementById('authGate').classList.remove('hidden');
+    document.getElementById('app').style.display = 'none';
+  }
+});
+auth.getRedirectResult().catch(e=>{
+  document.getElementById('authStatus').textContent = 'Sign-in failed — try again.';
+  console.error(e);
+});
+
 let selectedRecords = new Set();
 
 function pad(n){ return n.toString().padStart(2,'0'); }
@@ -359,7 +479,7 @@ function fmtDateShort(dateStr){
 
 async function getDay(dateStr){
   try{
-    const res = await window.storage.get('day:'+dateStr, false);
+    const res = await storage.get('day:'+dateStr, false);
     if(res && res.value) return JSON.parse(res.value);
     return {water:0, urine:0, entries:[]};
   }catch(e){
@@ -368,7 +488,7 @@ async function getDay(dateStr){
 }
 async function saveDay(dateStr, data){
   try{
-    await window.storage.set('day:'+dateStr, JSON.stringify(data), false);
+    await storage.set('day:'+dateStr, JSON.stringify(data), false);
   }catch(e){ console.error('save day failed', e); }
 }
 
@@ -381,254 +501,4 @@ function togglePanel(type){
 
 async function logAmount(type, amount){
   const key = todayKey();
-  const day = await getDay(key);
-  day[type] += amount;
-  day.entries.push({type, amount, time: new Date().toISOString()});
-  await saveDay(key, day);
-  document.getElementById('panel-'+type).classList.remove('active');
-  renderHome();
-}
-function logCustom(type){
-  const input = document.getElementById(type==='water' ? 'customWater' : 'customUrine');
-  const val = parseInt(input.value, 10);
-  if(!val || val<=0) return;
-  input.value = '';
-  logAmount(type, val);
-}
-
-async function renderHome(){
-  fmtDateHeader();
-  const key = todayKey();
-  const day = await getDay(key);
-  document.getElementById('waterTotal').innerHTML = day.water + '<sub>ml</sub>';
-  document.getElementById('urineTotal').innerHTML = day.urine + '<sub>ml</sub>';
-
-  const total = day.water + day.urine;
-  const track = document.getElementById('balanceTrack');
-  if(total===0){
-    track.innerHTML = '';
-  } else {
-    const wPct = (day.water/total*100).toFixed(1);
-    const uPct = (day.urine/total*100).toFixed(1);
-    track.innerHTML = `<div class="seg-water" style="width:${wPct}%"></div><div class="seg-urine" style="width:${uPct}%"></div>`;
-  }
-  const net = day.water - day.urine;
-  const netEl = document.getElementById('balanceNet');
-  if(net === 0 && total === 0){
-    netEl.innerHTML = `<span style="color:var(--ink-soft); font-weight:400;">No entries logged yet today</span>`;
-  } else if(net >= 0){
-    netEl.innerHTML = `Net <span class="amt">+${net} ml</span> retained`;
-  } else {
-    netEl.innerHTML = `Net <span class="amt">${net} ml</span> — output exceeds intake`;
-  }
-
-  const list = document.getElementById('entryList');
-  if(day.entries.length===0){
-    list.innerHTML = '<div class="empty-note">Nothing logged yet — use the buttons above.</div>';
-  } else {
-    const sorted = [...day.entries].sort((a,b)=> new Date(b.time)-new Date(a.time));
-    list.innerHTML = sorted.map(e=>{
-      const t = new Date(e.time);
-      const timeStr = t.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
-      const color = e.type==='water' ? 'var(--water)' : 'var(--urine)';
-      const labelText = e.type==='water' ? 'Water' : 'Urine';
-      return `<div class="entry-row"><span class="tag"><span class="tdot" style="background:${color}"></span>${labelText} +${e.amount} ml</span><span class="time">${timeStr}</span></div>`;
-    }).join('');
-  }
-}
-
-async function loadAllDays(){
-  try{
-    const listRes = await window.storage.list('day:', false);
-    const keys = (listRes && listRes.keys) || [];
-    const days = [];
-    for(const k of keys){
-      try{
-        const r = await window.storage.get(k, false);
-        if(r && r.value){
-          const data = JSON.parse(r.value);
-          days.push({date: k.replace('day:',''), water: data.water||0, urine: data.urine||0});
-        }
-      }catch(e){}
-    }
-    days.sort((a,b)=> b.date.localeCompare(a.date));
-    return days;
-  }catch(e){
-    return [];
-  }
-}
-
-async function renderHistory(){
-  const days = await loadAllDays();
-  const dayList = document.getElementById('dayList');
-  if(days.length===0){
-    dayList.innerHTML = '<div class="empty-note">No history yet — log an entry on the Home tab.</div>';
-  } else {
-    dayList.innerHTML = days.map(d=>{
-      const diff = d.water - d.urine;
-      return `<div class="day-row">
-        <div><div class="dd">${fmtDateShort(d.date)}</div><div class="dsub">${diff>=0 ? '+' : ''}${diff} ml net</div></div>
-        <div class="figs">
-          <div class="f w"><div class="n">${d.water}</div><div class="l">in</div></div>
-          <div class="f u"><div class="n">${d.urine}</div><div class="l">out</div></div>
-        </div>
-      </div>`;
-    }).join('');
-  }
-
-  const startInput = document.getElementById('rangeStart');
-  const endInput = document.getElementById('rangeEnd');
-  if(!startInput.value && days.length>0) startInput.value = days[days.length-1].date;
-  if(!endInput.value) endInput.value = todayKey();
-
-  function updateRangeSummary(){
-    const s = startInput.value, e = endInput.value;
-    let w=0,u=0;
-    days.forEach(d=>{
-      if((!s || d.date>=s) && (!e || d.date<=e)){ w+=d.water; u+=d.urine; }
-    });
-    document.getElementById('rangeWater').textContent = w;
-    document.getElementById('rangeUrine').textContent = u;
-  }
-  startInput.onchange = updateRangeSummary;
-  endInput.onchange = updateRangeSummary;
-  updateRangeSummary();
-}
-
-// ---- Records ----
-function fileToDataUrl(file){
-  return new Promise((resolve,reject)=>{
-    const r = new FileReader();
-    r.onload = ()=> resolve(r.result);
-    r.onerror = reject;
-    r.readAsDataURL(file);
-  });
-}
-
-async function getRecordsIndex(){
-  try{
-    const res = await window.storage.get('records-index', false);
-    if(res && res.value) return JSON.parse(res.value);
-    return [];
-  }catch(e){ return []; }
-}
-async function saveRecordsIndex(idx){
-  try{
-    await window.storage.set('records-index', JSON.stringify(idx), false);
-  }catch(e){ console.error(e); }
-}
-
-async function handleFile(evt){
-  const file = evt.target.files[0];
-  if(!file) return;
-  const dateVal = document.getElementById('uploadDate').value || todayKey();
-  const dataUrl = await fileToDataUrl(file);
-  const type = file.type === 'application/pdf' ? 'pdf' : 'image';
-  const id = 'rec_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
-
-  try{
-    await window.storage.set('record:'+id, JSON.stringify({date: dateVal, type, filename: file.name, dataUrl}), false);
-    const idx = await getRecordsIndex();
-    idx.push({id, date: dateVal, type, filename: file.name});
-    await saveRecordsIndex(idx);
-  }catch(e){
-    alert('Could not save file — it may be too large.');
-  }
-  evt.target.value = '';
-  renderRecords();
-}
-
-async function renderRecords(){
-  const idx = await getRecordsIndex();
-  idx.sort((a,b)=> b.date.localeCompare(a.date));
-  const listEl = document.getElementById('recordList');
-  if(idx.length===0){
-    listEl.innerHTML = '<div class="empty-records">No reports uploaded yet.</div>';
-  } else {
-    listEl.innerHTML = idx.map(r=>{
-      const checked = selectedRecords.has(r.id) ? 'checked' : '';
-      const thumb = r.type==='pdf' ? '<div class="thumb">PDF</div>' : `<div class="thumb" id="thumb-${r.id}">IMG</div>`;
-      return `<div class="record-item">
-        ${thumb}
-        <div class="rmeta"><div class="rdate">${fmtDateShort(r.date)}</div><div class="rname">${r.filename}</div></div>
-        <input type="checkbox" ${checked} onchange="toggleSelect('${r.id}', this.checked)">
-      </div>`;
-    }).join('');
-    // lazy-load image thumbnails
-    idx.filter(r=>r.type==='image').forEach(async r=>{
-      try{
-        const res = await window.storage.get('record:'+r.id, false);
-        if(res && res.value){
-          const data = JSON.parse(res.value);
-          const el = document.getElementById('thumb-'+r.id);
-          if(el){ el.outerHTML = `<img class="thumb" src="${data.dataUrl}">`; }
-        }
-      }catch(e){}
-    });
-  }
-  updateCompareBar();
-}
-
-function toggleSelect(id, checked){
-  if(checked){
-    if(selectedRecords.size>=2){
-      // deselect oldest
-      const first = selectedRecords.values().next().value;
-      selectedRecords.delete(first);
-    }
-    selectedRecords.add(id);
-  } else {
-    selectedRecords.delete(id);
-  }
-  renderRecords();
-}
-
-function updateCompareBar(){
-  const bar = document.getElementById('compareBar');
-  document.getElementById('compareCount').textContent = selectedRecords.size + ' selected';
-  bar.classList.toggle('active', selectedRecords.size===2);
-  if(selectedRecords.size<2){
-    document.getElementById('compareView').innerHTML = '';
-  }
-}
-
-async function showCompare(){
-  const ids = [...selectedRecords];
-  const view = document.getElementById('compareView');
-  view.innerHTML = '<div class="empty-note">Loading comparison…</div>';
-  const records = [];
-  for(const id of ids){
-    try{
-      const res = await window.storage.get('record:'+id, false);
-      if(res && res.value) records.push(JSON.parse(res.value));
-    }catch(e){}
-  }
-  view.innerHTML = `<div class="compare-cols">` + records.map(r=>{
-    const media = r.type==='pdf'
-      ? `<iframe src="${r.dataUrl}"></iframe>`
-      : `<img src="${r.dataUrl}">`;
-    return `<div class="compare-col"><div class="cdate">${fmtDateShort(r.date)}</div>${media}</div>`;
-  }).join('') + `</div>`;
-}
-
-function switchTab(name){
-  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
-  document.getElementById('screen-'+name).classList.add('active');
-  document.querySelectorAll('nav.tabbar button').forEach(b=>b.classList.remove('active'));
-  const idx = name==='home'?0:name==='history'?1:2;
-  document.querySelectorAll('nav.tabbar button')[idx].classList.add('active');
-  if(name==='history') renderHistory();
-  if(name==='records') renderRecords();
-}
-
-document.getElementById('uploadDate').value = todayKey();
-renderHome();
-
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('service-worker.js').catch(()=>{});
-  });
-}
-</script>
-</body>
-</html>
+  const
